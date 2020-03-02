@@ -1,7 +1,6 @@
 #ifndef _CHIP8_H_
 #define _CHIP8_H_
 #include <stdint.h>
-#include <stdbool.h>
 
 typedef struct
 {
@@ -21,7 +20,7 @@ typedef struct
 
 void chip8_initialize(Chip8*);
 void chip8_loadgame(Chip8*, const char*, const char*, size_t);
-void chip8_emulateCycle(Chip8*);
+void chip8_emulatecycle(Chip8*);
 
 void close_log();
 #endif

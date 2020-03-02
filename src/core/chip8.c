@@ -3,11 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
-
+#define max(a, b) (((a) > (b)) ? (a) : (b))
 
 #define DEBUG
 #define CHIP8_LOG "chip8.log"
-FILE *clog = NULL;
+	FILE *clog = NULL;
 #define touch_log()\
 	do {\
 		clog = fopen(CHIP8_LOG, "a");\
@@ -32,6 +32,13 @@ FILE *clog = NULL;
 #else
 #define plog(...)
 #endif
+
+typedef struct {
+	uint8_t x, y, n, kk;
+	uint16_t nnn;
+	Chip8* c8;
+} Paras;
+typedef void (*Chip8_Op)(Paras*);
 
 uint8_t chip8_fontset[80] =
 {
@@ -168,212 +175,339 @@ void chip8_loadgame(Chip8 *c8, const char* name, const char *bin, size_t size)
 	plog("Load file %s\n", name);
 }
 
-bool chip8_drawFlag(Chip8 *c8)
+void emulatecycle(Chip8 *c8)
 {
-	return c8->drawFlag;
+	static Chip8_Op opcodes[] = {
+		op00ez, op1nnn, op2nnn, op3xkk,
+		op4xkk, op5xy0, op6xkk, op7xkk,
+		op8xyz, op9xy0, opannn, opbnnn,
+		opcxkk, opdxyn, opexzz, opfxzz,
+	};
+
+	Paras p = {
+		(c8->opcode & 0x0F00) >> 8,
+		(c8->opcode & 0x00F0) >> 4,
+		c8->opcode & 0x000F,
+		c8->opcode & 0x00FF,
+		c8->opcode & 0x0FFF,
+		c8,
+	};
+
+	c8->opcode = (c8->memory[c8->pc] << 8) | c8->memory[c8->pc + 1];
+
+	plog("%3X %4X ", c8->pc, c8->opcode);
+
+	opcodes[(c8->opcode & 0xF000) >> 12](&p);
+
+	timer_tick(c8);
 }
 
-void chip8_emulateCycle(Chip8 *c8)
+void op00ez(Paras *p)
 {
-	//Fetch opcode
-	uint8_t x, y, n;
-	uint8_t kk;
-	uint16_t nnn;
-	c8->opcode = c8->memory[c8->pc] << 8 | c8->memory[c8->pc + 1];
-	x = (c8->opcode & 0x0F00) >> 8;
-	y = (c8->opcode & 0x00F0) >> 4;
-	n = c8->opcode & 0x000F;
-	kk = c8->opcode & 0x00FF;
-	nnn = c8->opcode & 0x0FFF;
-
-	//Decode opcode
-	switch (c8->opcode & 0xF000) {
-	case 0x0000:
-		switch (n) {
-		case 0x0: //CLS
-			memset(c8->gfx, 0, 64 * 32);
-			c8->drawFlag = 1;
-			c8->pc += 2;
-			break;
-		case 0xE://RET
-			c8->pc = c8->stack[--c8->sp];
-			break;
-		default:
-			err_unkown_opcode(c8->opcode);
-		}
-		break;
-	case 0x1000://JP addr
-		c8->pc = nnn;
-		break;
-	case 0x2000: //Call subroutine at NNN
-		c8->stack[c8->sp++] = c8->pc + 2;
-		c8->pc = nnn;
-		break;
-	case 0x3000://SE Vx, byte
-		c8->pc += (c8->V[x] == kk) ? 4 : 2;
-		break;
-	case 0x4000://SNE Vx,byte
-		c8->pc += (c8->V[x] != kk) ? 4 : 2;
-		break;
-	case 0x5000://SE Vx,Vy
-		c8->pc += (c8->V[x] == c8->V[y]) ? 4 : 2;
-		break;
-	case 0x6000://LD Vx,byte
-		c8->V[x] = kk;
-		c8->pc += 2;
-		break;
-	case 0x7000://ADD Vx,byte
-		c8->V[x] += kk;
-		c8->pc += 2;
-		break;
-	case 0x8000: {
-		switch (n) {
-		case 0x0://LD Vx, Vy
-			c8->V[x] = c8->V[y];
-			break;
-		case 0x1://OR Vx, Vy
-			c8->V[x] |= c8->V[y];
-			break;
-		case 0x2://AND Vx, Vy
-			c8->V[x] &= c8->V[y];
-			break;
-		case 0x3://XOR Vx, Vy
-			c8->V[x] ^= c8->V[y];
-			break;
-		case 0x4://ADD Vx, Vy
-			c8->V[0xF] = (c8->V[x] > 0xFF - c8->V[y]) ? 1 : 0;
-			c8->V[x] += c8->V[y];
-			break;
-		case 0x5://SUB Vx, Vy
-			c8->V[0xF] = (c8->V[x] > c8->V[y]) ? 1 : 0;
-			c8->V[x] -= c8->V[y];
-			break;
-		case 0x6://SHR Vx {,Vy}
-			c8->V[0xF] = c8->V[x] & 0x01;
-			c8->V[x] >>= 1;
-			break;
-		case 0x7://SUBN Vx, Vy
-			c8->V[0xF] = (c8->V[y] > c8->V[x]) ? 1 : 0;
-			c8->V[x] = c8->V[y] - c8->V[x];
-			break;
-		case 0xE://SHL Vx {, Vy}
-			c8->V[0xF] = (c8->V[x] >> 7) & 0x01;
-			c8->V[x] <<= 1;
-			break;
-		default:
-			err_unkown_opcode(c8->opcode);
-		}
-		c8->pc += 2;
-		break;
-	case 0x9000: //SNE Vx, Vy
-		c8->pc += (c8->V[x] != c8->V[y]) ? 4 : 2;
-		break;
-	case 0xA000: //LD I, addr
-		c8->I = nnn;
-		c8->pc += 2;
-		break;
-	case 0xB000://JP V0, addr
-		c8->pc = c8->V[0] + nnn;
-		break;
-	case 0xC000://RND Vx, byte
-		c8->V[x] = (rand() % 256) & kk;
-		c8->pc += 2;
-		break;
-	case 0xD000://DRW Vx, Vy, nibble
-		uint16_t height = n;
-		uint16_t pixel;
-		c8->V[0xF] = 0;
-		for (int yline = 0; yline < height; ++yline) {
-			pixel = c8->memory[c8->I + yline];
-			for (int xline = 0; xline < 8; ++xline) {
-				if ((pixel & (0x80 >> xline)) != 0) {
-					if (c8->gfx[x + xline + (y + yline) * 64] == 1)
-						c8->V[0xF] = 1;
-					c8->gfx[x + xline +(y + yline) * 64] ^= 1;
-				}
-			}
-		}
-		c8->drawFlag = 1;
-		c8->pc += 2;
-		break;
-	case 0xE000:
-		switch (n) {
-		case 0xE://SKP Vx
-			c8->pc += c8->key[c8->V[x]] ? 4 : 2;
-			break;
-		case 0x1://SKNP Vx
-			c8->pc += !(c8->key[c8->V[x]]) ? 4 : 2;
-			break;
-		default:
-			err_unkown_opcode(c8->opcode);
-		}
-		break;
-	case 0xF000: {
-		switch (kk) {
-		case 0x07://LD Vx, DT
-			c8->V[x] = c8->delay_timer;
-			break;
-		case 0x0A://LD Vx, K
-			for (int k = 0; k < 16; ++k) {
-				if (c8->key[k]) {
-					c8->V[x] = k;
-					c8->pc += 2;
-					break;
-				}
-			}
-			c8->pc -= 2;
-			break;
-		case 0x0015://LD DT,Vx
-			c8->delay_timer = c8->V[x];
-			break;
-		case 0x0018://LD ST, Vx
-			c8->sound_timer = c8->V[x];
-			break;
-		case 0x001E://ADD I, Vx
-			c8->V[0xF] = (c8->I > 0xFFF - c8->V[x]) ? 1 : 0;
-			c8->I += c8->V[x];
-			break;
-		case 0x0029://LD F, Vx
-			c8->I = c8->V[x] * 5;
-			break;
-		case 0x0033://LD B, Vx
-			c8->memory[c8->I] = c8->V[x] / 100;
-			c8->memory[c8->I + 1] = c8->V[x] / 10 % 10;
-			c8->memory[c8->I + 2] = c8->V[x] % 10;
-			break;
-		case 0x0055://LD Vx, [I]
-			for (int i = 0; i <= x; ++i) {
-				c8->memory[c8->I + i] = c8->V[i];
-			}
-			c8->I += x + 1;
-			break;
-		case 0x0065://LD Vx, [I]
-			for (int i = 0; i <= x; ++i) {
-				c8->V[i] = c8->memory[c8->I + i];
-			}
-			c8->I += x + 1;
-			break;
-		default:
-			err_unkown_opcode(c8->opcode);
-		}
-		c8->pc += 2;
-		break;
-	}
-	default:
-		fprintf(stderr, "Unkown opcode 0x%X\n", c8->opcode);
-	}
-
-	//Update timers
-	if (c8->delay_timer > 0) 
-		--c8->delay_timer;
-	if (c8->sound_timer > 0) {
-		if (c8->sound_timer == 1)
-			printf("BEEP!\n");
-		--c8->sound_timer;
+	switch (p->n) {
+		case 0x0: op00e0(p); break;
+		case 0xe: op00ee(p); break;
+		default: err_unkown_opcode(p->c8->opcode);
 	}
 }
 
-void close_log()
+void op00e0(Paras *p)
 {
-	fclose(clog);
+	plog("Clear the display\n");
+	memset(p->c8->gfx, 0, 64 * 32);
+	p->c8->drawFlag = 1;
+	p->c8->pc += 2;
+}
+
+void op00ee(Paras *p)
+{
+	plog("Return from a subroutine\n");
+	p->c8->pc = p->c8->stack[--p->c8->sp];
+}
+
+void op1nnn(Paras *p)
+{
+	plog("Jump to location %3X\n", p->nnn);
+	p->c8->pc = p->nnn;
+}
+
+void op2nnn(Paras *p)
+{
+	plog("Call subroutine at %3X\n", p->nnn);
+	p->c8->stack[p->c8->sp++] = p->c8->pc + 2;
+	p->c8->pc = p->nnn;
+}
+
+void op3xkk(Paras *p)
+{
+	plog("Skip next instruction if V%X == V%X\n", p->x, p->y);
+	p->c8->pc += (p->c8->V[p->x] == p->kk) ? 4 : 2;
+}
+
+void op4xkk(Paras *p)
+{
+	plog("Skip next instruction if V%X != V%X\n", p->x, p->y);
+	p->c8->pc += (p->c8->V[p->x] != p->kk) ? 4 : 2;
+}
+
+void op5xy0(Paras *p)
+{
+	plog("Skip next instruction if V%X == V%X\n", p->x, p->y);
+	p->c8->pc += (p->c8->V[p->x] == p->c8->V[p->y]) ? 4 : 2;
+}
+
+void op6xkk(Paras *p)
+{
+	plog("Set V%X = V%X\n", p->x, p->y);
+	p->c8->V[p->x] = p->kk;
+	p->c8->pc += 2;
+}
+
+void op7xkk(Paras *p)
+{
+	plog("Set V%X = V%X + %d\n", p->x, p->x, p->kk);
+	p->c8->V[p->x] += p->kk;
+	p->c8->pc += 2;
+}
+
+void op8xyz(Paras *p)
+{
+	static Chip8_Op opcodes[] = {
+		op8xy0, op8xy1, op8xy2, op8xy3,
+		op8xy4, op8xy5, op8xy6, op8xy7,
+	};
+	if (0 <= p->n && p->n < 8)
+		opcodes[p->n](p);
+	else if (p->n == 0xe)
+		op8xye(p);
+	else
+		err_unkown_opcode(p->c8->opcode);
+}
+
+void op8xy0(Paras *p)
+{
+	plog("Set V%X = V%X\n", p->x, p->y);
+	p->c8->V[p->x] = p->c8->V[p->y];
+	p->c8->pc += 2;
+}
+
+void op8xy1(Paras *p)
+{
+	plog("Set V%X = V%X OR V%X\n", p->x, p->x, p->y);
+	p->c8->V[p->x] |= p->c8->V[p->y];
+	p->c8->pc += 2;
+}
+
+void op8xy2(Paras *p)
+{
+	plog("Set V%X = V%X AND V%X\n", p->x, p->x, p->y);
+	p->c8->V[p->x] &= p->c8->V[p->y];
+	p->c8->pc += 2;
+}
+
+void op8xy3(Paras *p)
+{
+	plog("Set V%X = V%X XOR V%X\n", p->x, p->x, p->y);
+	p->c8->V[p->x] ^= p->c8->V[p->y];
+	p->c8->pc += 2;
+}
+
+void op8xy4(Paras *p)
+{
+	plog("Set V%X = V%X + V%X\n", p->x, p->x, p->y);
+	p->c8->V[0xF] = (p->c8->V[p->x] > 0xFF - p->c8->V[p->y]) ? 1 : 0;
+	p->c8->V[p->x] += p->c8->V[p->y];
+	p->c8->pc += 2;
+}
+
+void op8xy5(Paras *p)
+{
+	plog("Set V%X = V%X - V%X, set VF = NOT borrow\n", p->x, p->x, p->y);
+	p->c8->V[0xF] = (p->c8->V[p->x] > p->c8->V[p->y]) ? 1 : 0;
+	p->c8->V[p->x] -= p->c8->V[p->y];
+	p->c8->pc += 2;
+}
+
+void op8xy6(Paras *p)
+{
+	plog("Set V%X = V%X SHR 1, set VF\n", p->x, p->x);
+	p->c8->V[0xF] = p->c8->V[p->x] & 0x01;
+	p->c8->V[p->x] >>= 1;
+	p->c8->pc += 2;
+}
+
+void op8xy7(Paras *p)
+{
+	plog("Set V%X = V%X - V%X, set VF = NOT borrow\n", p->x, p->y, p->x);
+	p->c8->V[0xF] = (p->c8->V[p->y] > p->c8->V[p->x]) ? 1 : 0;
+	p->c8->V[p->x] = p->c8->V[p->y] - p->c8->V[p->x];
+	p->c8->pc += 2;
+}
+
+void op8xye(Paras *p)
+{
+	plog("Set V%X = V%X SHL 1, set VF\n", p->x, p->x);
+	p->c8->V[0xF] = (p->c8->V[p->x] >> 7) & 0x01;
+	p->c8->V[p->x] <<= 1;
+	p->c8->pc += 2;
+}
+
+void op9xy0(Paras *p)
+{
+	plog("Skip next instruction if V%X != V%X\n", p->x, p->y);
+	p->c8->pc += (p->c8->V[p->x] != p->c8->V[p->y]) ? 4 : 2;
+}
+
+void opannn(Paras *p)
+{
+	plog("Set I = %3X\n", p->nnn);
+	p->c8->I = p->nnn;
+	p->c8->pc += 2;
+}
+
+void opbnnn(Paras *p)
+{
+	plog("Jump to location %3X + V0", p->nnn);
+	p->c8->pc = p->c8->V[0] + p->nnn;
+}
+
+void opcxkk(Paras *p)
+{
+	plog("Set V%X = random byte AND %2X", p->x, p->kk);
+	p->c8->V[p->x] = (rand() % 256) & p->kk;
+	p->c8->pc += 2;
+}
+
+void opdxyn(Paras *p)
+{
+	plog("Display sprite\n");
+	p->c8->V[0xF] = 0;
+	for (int yline = 0; yline < p->n; ++yline) {
+		uint16_t pixel = p->c8->memory[p->c8->I + yline];
+		for (int xline = 0; xline < 8; ++xline) {
+			if ((pixel & (0x80 >> xline)) != 0) {
+				if (p->c8->gfx[p->x + xline + (p->y + yline) * 64] == 1)
+					p->c8->V[0xF] = 1;
+				p->c8->gfx[p->x + xline + (p->y + yline) * 64] ^= 1;
+			}
+		}
+	}
+	p->c8->drawFlag = 1;
+	p->c8->pc += 2;
+}
+
+void opexzz(Paras *p)
+{
+	switch (p->kk) {
+		case 0x9e: opex9e(p); break;
+		case 0xa1: opexa1(p); break;
+		default: err_unkown_opcode(p->c8->opcode);
+	}
+}
+
+void opex9e(Paras *p)
+{
+	plog("Skip next instruction if V%X key is pressed\n", p->x);
+	p->c8->pc += p->c8->key[p->c8->V[p->x]] ? 4 : 2;
+}
+
+void opexa1(Paras *p)
+{
+	plog("Skip next instruction if V%X key is not pressed\n", p->x);
+	p->c8->pc += !(p->c8->key[p->c8->V[p->x]]) ? 4 : 2;
+}
+
+void opfxzz(Paras *p)
+{
+	//			07, 0a, 15, 18, 1e, 29, 33, 55, 65
+	//%18		7,  10, 3,  6,  12, 5,  15, 13, 11
+	static Chip8_Op opcodes[] = {
+		NULL, NULL, NULL, opfx15,
+		NULL, opfx29, opfx18, opfx07,
+		NULL, NULL, opfx0a, opfx65, NULL,
+		opfx55, NULL, opfx33, NULL, NULL, NULL,
+	}; int addr = p->kk % 18;
+	if (!opcodes[addr]) err_unkown_opcode(p->c8->opcode);
+	opcodes[addr](p);
+}
+
+void opfx07(Paras *p)
+{
+	plog("Set V%X = delay timer value\n", p->x);
+	p->c8->V[p->x] = p->c8->delay_timer;
+	p->c8->pc += 2;
+}
+
+void opfx0a(Paras *p)
+{
+	plog("Wait for a key press, store the key value in V%X\n", p->x);
+	for (int i = 0; i < 16; ++i) {
+		if (p->c8->key[i]) {
+			p->c8->V[p->x] = i;
+			p->c8->pc += 2;
+			break;
+		}
+	}
+}
+
+void opfx15(Paras *p)
+{
+	plog("Set delay timer = V%X\n", p->x);
+	p->c8->delay_timer = p->c8->V[p->x];
+	p->c8->pc += 2;
+}
+
+void opfx18(Paras *p)
+{
+	plog("Set sound timer = V%X\n", p->x);
+	p->c8->sound_timer = p->c8->V[p->x];
+	p->c8->pc += 2;
+}
+
+void opfx1e(Paras *p)
+{
+	plog("Set I = I + V%X\n", p->x);
+	p->c8->V[0xF] = (p->c8->I > 0xFFF - p->c8->V[p->x]) ? 1 : 0;
+	p->c8->I += p->c8->V[p->x];
+	p->c8->pc += 2;
+}
+
+void opfx29(Paras *p)
+{
+	plog("Set I = location of sprite for digit V%X\n", p->x);
+	p->c8->I = p->c8->V[p->x] * 5;
+	p->c8->pc += 2;
+}
+
+void opfx33(Paras *p)
+{
+	plog("Store BCD of V%X in memory locations I...I+2\n", p->x);
+	p->c8->memory[p->c8->I] = p->c8->V[p->x] / 100;
+	p->c8->memory[p->c8->I + 1] = p->c8->V[p->x] / 10 % 10;
+	p->c8->memory[p->c8->I + 2] = p->c8->V[p->x] % 10;
+	p->c8->pc += 2;
+}
+
+void opfx55(Paras *p)
+{
+	plog("Stores V0 to V%X in memory starting at I\n", p->x);
+	for (int i = 0; i <= p->x; ++i) {
+		p->c8->memory[p->c8->I + i] = p->c8->V[i];
+	}
+	p->c8->I += p->x + 1;
+}
+
+void opfx65(Paras *p)
+{
+	plog("Fills V0 to V%X with values from memory starting at I\n", p->x);
+	for (int i = 0; i <= p->x; ++i) {
+		p->c8->V[i] = p->c8->memory[p->c8->I + i];
+	}
+	p->c8->I += p->x + 1;
+}
+
+void timer_tick(Chip8* c8)
+{
+	c8->delay_timer = max(c8->delay_timer - 1, 0);
+	c8->sound_timer = max(c8->sound_timer - 1, 0);
 }
